@@ -1421,19 +1421,65 @@ def draw_game(game):
 
     margin = int(10 * game.scale_factor)
     
-    # Always show lives counter (moved outside of HUD check)
-    heart_char = "♥" if game.lives > 0 else "♡"
-    lives_text = game.big_font.render(f"{heart_char} {game.lives}", True, RED)
-    lives_rect = lives_text.get_rect(topright=(game.screen_width - margin, margin))
+    # Draw heart-shaped lives counter
+    heart_size = int(25 * game.scale_factor)
+    spacing = int(8 * game.scale_factor)
+    padding = int(8 * game.scale_factor)
     
-    # Add a semi-transparent background for better visibility
-    bg_rect = lives_rect.inflate(20, 10)
-    bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
-    pygame.draw.rect(bg_surface, (0, 0, 0, 128), bg_surface.get_rect(), border_radius=5)
+    # Calculate total width and height needed
+    total_hearts = 4
+    total_width = (heart_size * total_hearts) + (spacing * (total_hearts - 1))
+    total_height = heart_size
+    
+    # Create a surface for the hearts with exact size needed
+    hearts_surface = pygame.Surface((total_width, total_height), pygame.SRCALPHA)
+    
+    # Draw hearts for each life
+    for i in range(total_hearts):
+        # Calculate position for this heart
+        x = (heart_size + spacing) * i + (heart_size // 2)
+        y = heart_size // 2
+        
+        # Heart color - red for lives, dark red for empty
+        color = RED if i < game.lives else (100, 0, 0)
+        
+        # Draw heart shape using circles and triangles
+        radius = heart_size // 2
+        
+        # Draw the two circles that form the top of the heart
+        pygame.draw.circle(hearts_surface, color, 
+                         (x - radius // 2, y - radius // 4), 
+                         radius // 2)
+        pygame.draw.circle(hearts_surface, color, 
+                         (x + radius // 2, y - radius // 4), 
+                         radius // 2)
+        
+        # Draw the triangle that forms the bottom of the heart
+        points = [
+            (x - radius, y - radius // 4),  # Left point
+            (x + radius, y - radius // 4),  # Right point
+            (x, y + radius * 0.9),          # Bottom point (slightly less than full radius)
+        ]
+        pygame.draw.polygon(hearts_surface, color, points)
+    
+    # Create background surface with exact padding
+    bg_width = total_width + 2 * padding
+    bg_height = total_height + 2 * padding
+    bg_surface = pygame.Surface((bg_width, bg_height), pygame.SRCALPHA)
+    
+    # Draw the background with rounded corners
+    pygame.draw.rect(bg_surface, (0, 0, 0, 160), (0, 0, bg_width, bg_height), 
+                    border_radius=int(5 * game.scale_factor))
+    
+    # Position the background container
+    bg_rect = bg_surface.get_rect(topright=(game.screen_width - margin, margin))
+    
+    # Draw the background
     game.screen.blit(bg_surface, bg_rect)
     
-    # Draw the lives text on top
-    game.screen.blit(lives_text, lives_rect)
+    # Position the hearts in the center of the background
+    hearts_rect = hearts_surface.get_rect(center=bg_rect.center)
+    game.screen.blit(hearts_surface, hearts_rect)
     
     # Only draw rest of HUD if UI is visible
     if game.show_ui:
@@ -1563,6 +1609,11 @@ def draw_accessibility_menu(game):
             "key": "disable_spinners",
             "label": "Disable Spinners",
             "description": "Completely disable spinner obstacles from spawning"
+        },
+        {
+            "key": "music_enabled",
+            "label": "Background Music",
+            "description": "Enable or disable background music"
         },
     ]
 

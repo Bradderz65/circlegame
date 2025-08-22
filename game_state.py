@@ -147,7 +147,8 @@ class Game:
             'dynamic_background': True,  # Enable dynamic star system (enabled by default)
             'click_radius_helper': False,  # Show visual click radius around cursor
             'disable_pipes': False,  # Disable pipe obstacles
-            'disable_spinners': False  # Disable spinner obstacles
+            'disable_spinners': False,  # Disable spinner obstacles
+            'music_enabled': True  # Enable background music
         }
         
         # Click radius helper properties

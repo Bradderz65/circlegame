@@ -11,13 +11,15 @@ Author: Split from original monolithic design
 import pygame
 import random
 import time
+import os
+import sys
 from game_state import Game, GameState, GameMode
 from game_config import *
 from circle import CircleType
 from ui_renderer import *
-from game_state import GameState
+from audio_manager import AudioManager
 
-def handle_game_over_input(game, event):
+def handle_game_over_input(game, event, audio_manager):
     """Handle input during game over screen"""
     if event.type == pygame.KEYDOWN:
         if game.name_input_active:
@@ -27,6 +29,7 @@ def handle_game_over_input(game, event):
                     game.player_name = ""
                     game.name_input_active = False
                     game.state = GameState.MAIN_MENU
+                    audio_manager.play_menu_music()
             elif event.key == pygame.K_BACKSPACE:
                 game.player_name = game.player_name[:-1]
             elif event.key == pygame.K_ESCAPE:
@@ -37,8 +40,10 @@ def handle_game_over_input(game, event):
         else:
             if event.key == pygame.K_m:
                 game.state = GameState.MAIN_MENU
+                audio_manager.play_menu_music()
             elif event.key == pygame.K_ESCAPE:
                 game.state = GameState.MAIN_MENU
+                audio_manager.play_menu_music()
 
     elif event.type == pygame.MOUSEBUTTONDOWN:
         # Check if clicked on input box - scaled
@@ -54,12 +59,26 @@ def handle_game_over_input(game, event):
 
 def main():
     """Main game loop"""
+    # Initialize pygame and create game instance
+    pygame.mixer.pre_init(44100, -16, 2, 2048)  # Better audio settings
+    pygame.init()
+    
     game = Game()
+    audio_manager = AudioManager(game)
     running = True
     show_high_scores = False
+    
+    # Start with menu music
+    audio_manager.play_menu_music()
 
     while running:
-        for event in pygame.event.get():
+        # Get all events
+        events = pygame.event.get()
+        
+        # Update audio manager with events
+        audio_manager.update(events)
+        
+        for event in events:
             if event.type == pygame.QUIT:
                 running = False
 
@@ -93,8 +112,10 @@ def main():
                     else:
                         if event.key == pygame.K_SPACE:
                             game.state = GameState.DIFFICULTY_SELECT
+                            audio_manager.play_menu_music()
                         elif event.key == pygame.K_s:
                             game.start_sandbox_mode()
+                            audio_manager.play_game_music()
                         elif event.key == pygame.K_h:
                             show_high_scores = True
                         elif event.key == pygame.K_a:
@@ -123,6 +144,19 @@ def main():
                                 if key == 'click_radius_helper' and not old_value and game.accessibility[key]:
                                     game.show_click_radius_tutorial = True
                                     game.click_radius_tutorial_start_time = time.time()
+                                
+                                # Handle music setting toggle
+                                elif key == 'music_enabled':
+                                    if game.accessibility[key]:  # Music was just enabled
+                                        # Start appropriate music based on current state
+                                        if game.state == GameState.MAIN_MENU:
+                                            audio_manager.play_menu_music()
+                                        elif game.state in [GameState.PLAYING, GameState.SANDBOX]:
+                                            audio_manager.play_game_music()
+                                    else:  # Music was just disabled
+                                        # Stop any currently playing music
+                                        if pygame.mixer.music.get_busy():
+                                            pygame.mixer.music.stop()
 
                 elif game.state == GameState.DIFFICULTY_SELECT:
                     if event.key == pygame.K_UP:
@@ -137,6 +171,7 @@ def main():
                         game.state = GameState.TIME_SELECT
                     elif event.key == pygame.K_ESCAPE:
                         game.state = GameState.MAIN_MENU
+                        audio_manager.play_menu_music()
 
                 elif game.state == GameState.TIME_SELECT:
                     if event.key == pygame.K_UP:
@@ -153,6 +188,7 @@ def main():
                         game.time_limit = min(300, game.time_limit + 30)
                     elif event.key == pygame.K_RETURN:
                         game.start_new_game()
+                        audio_manager.play_game_music()
                     elif event.key == pygame.K_ESCAPE:
                         game.state = GameState.DIFFICULTY_SELECT
 
@@ -193,6 +229,7 @@ def main():
                 elif game.state == GameState.SANDBOX:
                     if event.key == pygame.K_ESCAPE:
                         game.state = GameState.MAIN_MENU
+                        audio_manager.play_menu_music()
                     elif event.key == pygame.K_TAB:
                         game.show_ui = not game.show_ui
                     elif event.key == pygame.K_v:
@@ -296,7 +333,7 @@ def main():
                         game.sandbox_paused = not game.sandbox_paused  # Toggle pause
 
                 elif game.state == GameState.GAME_OVER:
-                    handle_game_over_input(game, event)
+                    handle_game_over_input(game, event, audio_manager)
 
             elif event.type == pygame.USEREVENT + 1:
                 # Timer event for delayed pipe spawn in sandbox mode
@@ -346,7 +383,7 @@ def main():
                 elif game.state == GameState.PLAYING or game.state == GameState.SANDBOX:
                     game.handle_click(event.pos)
                 elif game.state == GameState.GAME_OVER:
-                    handle_game_over_input(game, event)
+                    handle_game_over_input(game, event, audio_manager)
 
         # Update game state
         game.update()
