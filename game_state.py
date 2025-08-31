@@ -61,6 +61,9 @@ class Game:
         self.force_quick_pipes = False     # Toggle to force quick pipe spawning always
         self.quick_burst_remaining = 0     # Number of pipes remaining in current quick burst
         self.in_quick_burst = False        # Whether we're currently in a quick burst mode
+        # Pipe warning flash control
+        self.pipe_flash_armed = False      # Whether a flash is armed for the next spawn
+        self.pipe_flash_time = 0           # Time (ms) when the flash should trigger
 
         # Get monitor resolution for fullscreen
         info = pygame.display.Info()
@@ -157,6 +160,8 @@ class Game:
         self.max_click_radius = 100
         self.show_accessibility_menu = False
         self.accessibility_menu_index = 0  # selected option index
+        # Main menu keyboard selection index
+        self.menu_selected_index = 0
         
         # Click radius helper tutorial popup
         self.show_click_radius_tutorial = False
@@ -790,6 +795,9 @@ class Game:
         # Reset burst system
         self.in_quick_burst = False
         self.quick_burst_remaining = 0
+        # Reset flash arming
+        self.pipe_flash_armed = False
+        self.pipe_flash_time = 0
         
         # Check if we should enable pipe spawning this round based on difficulty settings
         pipe_settings = self.difficulty_settings[self.difficulty]["pipe_settings"]
@@ -845,6 +853,10 @@ class Game:
                 delay = random.randint(500, 1200)  # Make the next spawn quick too
 
         self.next_pipe_spawn_time = pygame.time.get_ticks() + delay
+        # Arm the warning flash to trigger ~500ms before spawn (or immediately if less than 500ms away)
+        if self.accessibility.get('pipe_warning_flash', True):
+            self.pipe_flash_armed = True
+            self.pipe_flash_time = max(0, self.next_pipe_spawn_time - 500)
         
     def update_tank_volumes(self):
         """Update volume for all currently playing tank hum sounds"""
@@ -907,10 +919,12 @@ class Game:
         """Spawn a spinning obstacle in sandbox mode"""
         mouse_x, mouse_y = pygame.mouse.get_pos()
         spawn_margin = 100
-        min_distance_from_cursor = 150 * self.scale_factor
+        min_distance_from_cursor = int(240 * self.scale_factor)
         
         # Try to spawn away from mouse and other obstacles
-        for attempt in range(20):
+        best_pos = None
+        best_dist = -1
+        for attempt in range(30):
             ox = random.randint(spawn_margin, self.screen_width - spawn_margin)
             oy = random.randint(spawn_margin, self.screen_height - spawn_margin)
             
@@ -921,13 +935,22 @@ class Game:
             
             # Check distance from other obstacles
             too_close_to_obstacle = any(
-                ((ox - o.x) ** 2 + (oy - o.y) ** 2) ** 0.5 < 200 
+                ((ox - o.x) ** 2 + (oy - o.y) ** 2) ** 0.5 < 220 
                 for o in self.obstacles
             )
             
+            if not too_close_to_obstacle and distance_from_cursor > best_dist:
+                best_dist = distance_from_cursor
+                best_pos = (ox, oy)
+            
             if distance_from_cursor >= min_distance_from_cursor and not too_close_to_obstacle:
                 self.obstacles.append(Obstacle(ox, oy, self.scale_factor, self.screen_width, self.screen_height))
-                break
+                return
+        
+        # Fallback to farthest valid sampled position
+        if best_pos is not None:
+            ox, oy = best_pos
+            self.obstacles.append(Obstacle(ox, oy, self.scale_factor, self.screen_width, self.screen_height))
 
     def spawn_pipe_obstacle(self):
         """Spawn a pipe obstacle (used by automatic spawning system)"""
@@ -1117,7 +1140,8 @@ class Game:
                 
                 # Spawn first obstacle away from cursor
                 cursor_pos = self.virtual_mouse_pos if self.cursor_is_grabbed else pygame.mouse.get_pos()
-                min_distance_from_cursor = 200  # Minimum distance from cursor in pixels
+                # Scale the required distance by resolution so spinners never spawn on the cursor
+                min_distance_from_cursor = int(240 * self.scale_factor)
                 
                 # Use the predetermined number of obstacles for this round
                 num_obstacles = self.obstacles_for_this_round
@@ -1127,7 +1151,10 @@ class Game:
 
                 # Spawn the decided number of obstacles, respecting spacing rules
                 for _ in range(num_obstacles):
-                    for attempt in range(10):
+                    placed = False
+                    best_pos = None
+                    best_dist = -1
+                    for attempt in range(30):
                         ox = random.randint(100, self.screen_width - 100)
                         oy = random.randint(100, self.screen_height - 100)
 
@@ -1136,27 +1163,34 @@ class Game:
                         distance = (dx * dx + dy * dy) ** 0.5
 
                         # Check distance from other obstacles already placed in this loop
-                        too_close = any(((ox - o.x) ** 2 + (oy - o.y) ** 2) ** 0.5 < 200 for o in self.obstacles)
+                        too_close = any(((ox - o.x) ** 2 + (oy - o.y) ** 2) ** 0.5 < 220 for o in self.obstacles)
+
+                        if not too_close and distance > best_dist:
+                            best_dist = distance
+                            best_pos = (ox, oy)
 
                         if distance >= min_distance_from_cursor and not too_close:
                             self.obstacles.append(Obstacle(ox, oy, self.scale_factor, self.screen_width, self.screen_height))
+                            placed = True
                             break
-                    
-                    # If we couldn't spawn the desired number, break early
-                    if len(self.obstacles) == 0 and attempt == 9:  # If we failed all attempts
-                        break
+                    # Fallback: place at farthest tested valid position (still not too close to others)
+                    if not placed and best_pos is not None:
+                        ox, oy = best_pos
+                        self.obstacles.append(Obstacle(ox, oy, self.scale_factor, self.screen_width, self.screen_height))
             
             # Handle pipe obstacle spawning during gameplay
             if self.state == GameState.PLAYING and self.pending_pipe_spawn:
                 current_time = pygame.time.get_ticks()
                 pipe_settings = self.difficulty_settings[self.difficulty]["pipe_settings"]
                 
-                # Show warning flash 500ms before pipe spawn if enabled
-                if (self.accessibility['pipe_warning_flash'] and 
-                    current_time >= self.next_pipe_spawn_time - 500 and 
-                    current_time < self.next_pipe_spawn_time - 400 and 
+                # Trigger warning flash before spawn using an armed timestamp
+                if (self.accessibility.get('pipe_warning_flash', True) and
+                    self.pending_pipe_spawn and
+                    self.pipe_flash_armed and
+                    current_time >= getattr(self, 'pipe_flash_time', 0) and
                     self.pipe_obstacles_this_round < pipe_settings["max_pipes_per_round"]):
                     self.pipe_warning_flash_alpha = 100  # Start flash
+                    self.pipe_flash_armed = False
                 
                 # Check if it's time to spawn a new pipe (unless disabled in accessibility)
                 if (not self.accessibility.get('disable_pipes', False) and

@@ -4,6 +4,101 @@ import time
 import random
 
 from game_config import *
+from game_state import GameMode
+
+# Lightweight caches to avoid recreating the same heavy surfaces every frame
+# Keyed by parameters that affect the visual output.
+SHADOW_CACHE = {}
+VIGNETTE_CACHE = {}
+GLOW_CACHE = {}
+
+def draw_shadow(surface, rect, radius=12, spread=6, alpha=90):
+    """Draw a soft shadow behind a rect using a cached alpha surface."""
+    key = (rect.width, rect.height, radius, spread, alpha)
+    shadow_surface = SHADOW_CACHE.get(key)
+    if shadow_surface is None:
+        shadow_surface = pygame.Surface((rect.width + spread * 2, rect.height + spread * 2), pygame.SRCALPHA)
+        shadow_color = (0, 0, 0, alpha)
+        pygame.draw.rect(
+            shadow_surface,
+            shadow_color,
+            pygame.Rect(0, 0, rect.width + spread * 2, rect.height + spread * 2),
+            border_radius=radius + 2,
+        )
+        SHADOW_CACHE[key] = shadow_surface
+    surface.blit(shadow_surface, (rect.x - spread, rect.y - spread))
+
+def draw_panel(surface, rect, bg_color, border_color, radius=12, border_width=2, with_shadow=True):
+    """Draw a rounded panel with optional soft shadow (shadow cached)."""
+    if with_shadow:
+        draw_shadow(surface, rect, radius=radius, spread=8, alpha=80)
+    pygame.draw.rect(surface, bg_color, rect, border_radius=radius)
+    if border_width:
+        pygame.draw.rect(surface, border_color, rect, border_width, border_radius=radius)
+
+def draw_vignette(surface, intensity=120):
+    """Darken edges to focus attention to center (cached per size + intensity)."""
+    w, h = surface.get_size()
+    key = (w, h, intensity)
+    overlay = VIGNETTE_CACHE.get(key)
+    if overlay is None:
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        cx, cy = w / 2, h / 2
+        max_r = math.hypot(cx, cy)
+        for i in range(8):
+            # Draw expanding transparent rings toward edges
+            t = i / 7
+            a = int(intensity * (t ** 2))
+            color = (0, 0, 0, a)
+            margin = int(t * max(cx, cy))
+            pygame.draw.rect(
+                overlay,
+                color,
+                pygame.Rect(margin, margin, w - margin * 2, h - margin * 2),
+                2,
+                border_radius=20,
+            )
+        VIGNETTE_CACHE[key] = overlay
+    surface.blit(overlay, (0, 0))
+
+def _get_glow_surface(text, font, color, glow_color, glow_size=6, glow_alpha=60):
+    """Build and cache a text+glow surface independent of position."""
+    key = (text, font.get_height(), color, glow_color, glow_size, glow_alpha)
+    cached = GLOW_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    base = font.render(text, True, color)
+    glow = font.render(text, True, glow_color)
+
+    # Allocate with padding for glow around all sides
+    pad = glow_size
+    surf_w = base.get_width() + pad * 2
+    surf_h = base.get_height() + pad * 2
+    glow_surface = pygame.Surface((surf_w, surf_h), pygame.SRCALPHA)
+
+    center = (surf_w // 2, surf_h // 2)
+    for r in range(1, glow_size + 1):
+        alpha = int(glow_alpha * (1 - (r - 1) / glow_size))
+        glow_surf = glow.copy()
+        glow_surf.set_alpha(alpha)
+        for dx, dy in (
+            (r, 0), (-r, 0), (0, r), (0, -r), (r, r), (-r, -r), (r, -r), (-r, r)
+        ):
+            rect = glow_surf.get_rect(center=(center[0] + dx, center[1] + dy))
+            glow_surface.blit(glow_surf, rect)
+
+    # Draw base text centered
+    base_rect = base.get_rect(center=center)
+    glow_surface.blit(base, base_rect)
+    GLOW_CACHE[key] = glow_surface
+    return glow_surface
+
+def draw_text_with_glow(surface, text, font, color, glow_color, center, glow_size=6, glow_alpha=60):
+    """Render text with a soft glow using a cached precomposed surface."""
+    glow_surface = _get_glow_surface(text, font, color, glow_color, glow_size, glow_alpha)
+    rect = glow_surface.get_rect(center=center)
+    surface.blit(glow_surface, rect)
 
 def draw_simple_background(game):
     """Draw a plain black background for accessibility"""
@@ -55,7 +150,7 @@ def draw_enhanced_background(game):
         game.stars_screen_size = (game.screen_width, game.screen_height)
         
         # Generate highly varied and dynamic stars
-        for _ in range(50):  # More stars for richer appearance
+        for _ in range(30):  # Reduced for performance while keeping richness
             # Choose star behavior type
             behavior = random.choices(
                 ['static', 'drifting', 'pulsing', 'twinkling', 'shooting', 'orbiting'],
@@ -325,107 +420,100 @@ def draw_background(game):
         draw_simple_background(game)
 
 def draw_main_menu(game):
-    # Draw background
+    # Background + optional vignette
     draw_background(game)
-    
-    # Main title with enhanced styling
-    title_y = int(60 * game.scale_factor)
-    
-    # Title shadow for depth
-    title_shadow = game.big_font.render("CIRCLE CLICKER", True, DARK_GRAY)
-    shadow_rect = title_shadow.get_rect(center=(game.screen_width // 2 + 3, title_y + 3))
-    game.screen.blit(title_shadow, shadow_rect)
-    
-    # Main title
-    title = game.big_font.render("CIRCLE CLICKER", True, LIGHT_BLUE)
-    title_rect = title.get_rect(center=(game.screen_width // 2, title_y))
-    game.screen.blit(title, title_rect)
-    
-    # Subtitle
-    subtitle = game.font.render("Fast-Paced Circle Destruction Game", True, YELLOW)
-    subtitle_rect = subtitle.get_rect(center=(game.screen_width // 2, title_y + int(50 * game.scale_factor)))
-    game.screen.blit(subtitle, subtitle_rect)
-    
-    # Create three-column layout
-    col_width = game.screen_width // 3
-    col_start_y = int(150 * game.scale_factor)
+    # Disable vignette in fullscreen to avoid thin ring artifact above buttons
+    if not getattr(game, 'fullscreen', False):
+        draw_vignette(game.screen, intensity=100)
 
-    # Define the two top boxes' content
-    left_title = "🎮 GAME MODES"
-    left_items = [
-        "SPACE - Start Game",
-        "S - Sandbox Mode",
-        "H - High Scores"
+    # Title and tagline
+    title_y = int(120 * game.scale_factor)
+    draw_text_with_glow(
+        game.screen,
+        "CIRCLE CLICKER",
+        game.big_font,
+        LIGHT_BLUE,
+        (80, 140, 220),
+        (game.screen_width // 2, title_y),
+        glow_size=10,
+        glow_alpha=80,
+    )
+
+    tagline = game.font.render("Fast. Precise. Addictive.", True, YELLOW)
+    game.screen.blit(tagline, tagline.get_rect(center=(game.screen_width // 2, title_y + int(40 * game.scale_factor))))
+
+    # Centered button stack
+    buttons = get_main_menu_buttons(game)
+    # Compute a tight panel around actual button rects to avoid extra outline space above
+    if buttons:
+        left = min(r.left for _, r, _ in buttons)
+        right = max(r.right for _, r, _ in buttons)
+        top = min(r.top for _, r, _ in buttons)
+        bottom = max(r.bottom for _, r, _ in buttons)
+
+        # Use asymmetric padding: keep smaller top padding to prevent a visible bar above
+        pad_x = int(16 * game.scale_factor)
+        # Extend the panel slightly more above the buttons for balanced padding
+        pad_top = int(18 * game.scale_factor)
+        pad_bottom = int(16 * game.scale_factor)
+
+        panel_rect = pygame.Rect(
+            left - pad_x,
+            top - pad_top,
+            (right - left) + pad_x * 2,
+            (bottom - top) + pad_top + pad_bottom,
+        )
+        draw_panel(game.screen, panel_rect, (18, 20, 32), LIGHT_BLUE, radius=16, border_width=2, with_shadow=True)
+
+    selected_idx = getattr(game, 'menu_selected_index', 0)
+    for i, (label, rect, action) in enumerate(buttons):
+        is_active = (i == selected_idx)
+        draw_menu_button(game, rect, label, is_active)
+
+    # Bottom hotkeys hint
+    hint = game.small_font.render("Space: Play  •  S: Sandbox  •  H: Scores  •  A: Accessibility  •  F11: Fullscreen", True, LIGHT_GRAY)
+    game.screen.blit(hint, hint.get_rect(center=(game.screen_width // 2, game.screen_height - int(40 * game.scale_factor))))
+
+def draw_menu_button(game, rect, text, hover):
+    base = (30, 34, 52)
+    active_bg = (38, 50, 78)
+    border = LIGHT_BLUE if hover else (90, 90, 120)
+    bg = active_bg if hover else base
+    draw_panel(game.screen, rect, bg, border, radius=12, border_width=3 if hover else 2, with_shadow=hover)
+
+    # Left accent bar when active
+    if hover:
+        accent_w = max(6, int(6 * game.scale_factor))
+        accent = pygame.Rect(rect.left + 4, rect.top + 4, accent_w, rect.height - 8)
+        pygame.draw.rect(game.screen, LIGHT_BLUE, accent, border_radius=6)
+
+    # Label
+    color = WHITE if hover else LIGHT_GRAY
+    label = game.font.render(text, True, color)
+    game.screen.blit(label, label.get_rect(center=rect.center))
+
+def get_main_menu_buttons(game):
+    # Define button specs
+    labels = [
+        ("Play", 'play'),
+        ("Sandbox", 'sandbox'),
+        ("High Scores", 'scores'),
+        ("Accessibility", 'accessibility'),
+        ("Quit", 'quit'),
     ]
-    right_title = "⚙️ CONTROLS & SETTINGS"
-    right_items = [
-        "A - Accessibility Options",
-        "F11 - Toggle Fullscreen",
-        "TAB - Toggle UI (In-Game)",
-        "Q - Quit Game"
-    ]
+    btn_w = int(420 * game.scale_factor)
+    btn_h = int(58 * game.scale_factor)
+    spacing = int(14 * game.scale_factor)
+    start_y = int(game.screen_height * 0.35)
+    x = game.screen_width // 2 - btn_w // 2
 
-    # Measure their sizes to position without overlap and keep the pair centered
-    left_w, _ = measure_menu_section(game, left_title, left_items, LIGHT_BLUE)
-    right_w, _ = measure_menu_section(game, right_title, right_items, GREEN)
-
-    side_margin = int(20 * game.scale_factor)
-    min_gap = int(24 * game.scale_factor)  # desired minimum gap
-
-    # Compute total width and center the pair as a group
-    available_width = game.screen_width - 2 * side_margin
-    gap = min_gap
-    total_width = left_w + gap + right_w
-    if total_width > available_width:
-        # Reduce gap if necessary (but keep a small minimum)
-        gap = max(int(8 * game.scale_factor), available_width - (left_w + right_w))
-        total_width = left_w + gap + right_w
-
-    # Start from centered group position
-    group_left = (game.screen_width - total_width) // 2
-    # Ensure margins
-    if group_left < side_margin:
-        group_left = side_margin
-    group_right = group_left + total_width
-    max_right = game.screen_width - side_margin
-    if group_right > max_right:
-        shift = group_right - max_right
-        group_left -= shift
-        group_right -= shift
-
-    left_cx = group_left + left_w // 2
-    right_cx = group_left + left_w + gap + right_w // 2
-
-    # Draw the two boxes using computed positions
-    draw_menu_section(game, left_title, left_items, left_cx, col_start_y, LIGHT_BLUE)
-    draw_menu_section(game, right_title, right_items, right_cx, col_start_y, GREEN)
-    
-    # Circle Types - visual showcase grid spanning full width below columns
-    showcase_y = col_start_y + int(180 * game.scale_factor)
-    draw_circle_types_section(game, showcase_y)
-    
-    # Bottom section - Quick gameplay tips
-    tips_y = game.screen_height - int(120 * game.scale_factor)
-    
-    # Tips background
-    tips_bg_rect = pygame.Rect(int(50 * game.scale_factor), tips_y - int(20 * game.scale_factor), 
-                              game.screen_width - int(100 * game.scale_factor), int(80 * game.scale_factor))
-    pygame.draw.rect(game.screen, (20, 20, 40), tips_bg_rect)
-    pygame.draw.rect(game.screen, LIGHT_BLUE, tips_bg_rect, 2)
-    
-    tips_title = game.font.render("💡 QUICK TIPS", True, YELLOW)
-    tips_title_rect = tips_title.get_rect(center=(game.screen_width // 2, tips_y))
-    game.screen.blit(tips_title, tips_title_rect)
-    
-    tips_text = [
-        "• Click circles before they escape • Speed increases each round • Use accessibility features if needed",
-        "• Different circle types have unique behaviors • Check high scores to track your progress"
-    ]
-    
-    for i, tip in enumerate(tips_text):
-        tip_surface = game.small_font.render(tip, True, WHITE)
-        tip_rect = tip_surface.get_rect(center=(game.screen_width // 2, tips_y + int(25 * game.scale_factor) + i * int(20 * game.scale_factor)))
-        game.screen.blit(tip_surface, tip_rect)
+    out = []
+    y = start_y
+    for text, action in labels:
+        rect = pygame.Rect(x, y, btn_w, btn_h)
+        out.append((text, rect, action))
+        y += btn_h + spacing
+    return out
 
 def draw_circle_type_icon(surface, x, y, r, type_name: str):
     """Draw a small icon representing a circle type at (x, y) with radius r"""
@@ -570,8 +658,7 @@ def draw_circle_types_section(game, start_y: int):
     top_extra = int(30 * game.scale_factor)
     bottom_extra = int(20 * game.scale_factor)
     section_rect = pygame.Rect(section_left, start_y - top_extra, box_width, box_height + top_extra + bottom_extra)
-    pygame.draw.rect(game.screen, (15, 15, 25), section_rect)
-    pygame.draw.rect(game.screen, ORANGE, section_rect, 2)
+    draw_panel(game.screen, section_rect, (15, 15, 25), ORANGE, radius=12, border_width=2, with_shadow=True)
 
     # Title
     game.screen.blit(title_surface, title_rect)
@@ -682,16 +769,24 @@ def draw_menu_section(game, title, items, center_x, start_y, title_color):
     bottom_margin = int(15 * game.scale_factor)  # Bottom margin
     section_height = title_height + items_height + bottom_margin
     
-    section_rect = pygame.Rect(center_x - section_width // 2, start_y - int(10 * game.scale_factor), 
-                              section_width, section_height)
+    section_rect = pygame.Rect(center_x - section_width // 2, start_y - int(10 * game.scale_factor),
+                               section_width, section_height)
+
+    # Background with rounded corners and shadow
+    panel_bg = (15, 15, 25)
+    draw_panel(game.screen, section_rect, panel_bg, title_color, radius=12, border_width=2, with_shadow=True)
     
-    # Background with subtle gradient effect
-    pygame.draw.rect(game.screen, (15, 15, 25), section_rect)
-    pygame.draw.rect(game.screen, title_color, section_rect, 2)
-    
-    # Section title - centered within the box
-    title_rect = title_surface.get_rect(center=(center_x, start_y + int(20 * game.scale_factor)))
-    game.screen.blit(title_surface, title_rect)
+    # Section title - centered within the box (slight glow)
+    draw_text_with_glow(
+        game.screen,
+        title,
+        game.font,
+        title_color,
+        (title_color[0]//2, title_color[1]//2, title_color[2]//2),
+        (center_x, start_y + int(20 * game.scale_factor)),
+        glow_size=4,
+        glow_alpha=50,
+    )
     
     # Section items - positioned within the box bounds
     item_y = start_y + int(50 * game.scale_factor)  # Start below title with more spacing
@@ -766,124 +861,107 @@ def draw_menu_section(game, title, items, center_x, start_y, title_color):
         item_y += int(25 * game.scale_factor)
 
 def draw_difficulty_select(game):
-    # Draw dynamic background instead of plain black
+    # Background + vignette
     draw_background(game)
+    if not getattr(game, 'fullscreen', False):
+        draw_vignette(game.screen, intensity=100)
 
-    # Title
-    title = game.big_font.render("Select Difficulty", True, WHITE)
-    title_rect = title.get_rect(center=(game.screen_width // 2, int(150 * game.scale_factor)))
-    game.screen.blit(title, title_rect)
+    # Title with glow
+    draw_text_with_glow(
+        game.screen,
+        "Select Difficulty",
+        game.big_font,
+        WHITE,
+        (120, 120, 160),
+        (game.screen_width // 2, int(120 * game.scale_factor)),
+        glow_size=8,
+        glow_alpha=70,
+    )
 
-    # Current speed multiplier display
+    # Buttons
+    diffs = [game.difficulty.EASY, game.difficulty.MEDIUM, game.difficulty.HARD, game.difficulty.NIGHTMARE]
+    labels = [f"{d.name.capitalize()} — {game.difficulty_settings[d]['description']}" for d in diffs]
+
+    btn_w = int(520 * game.scale_factor)
+    btn_h = int(58 * game.scale_factor)
+    spacing = int(14 * game.scale_factor)
+    start_y = int(game.screen_height * 0.35)
+    x = game.screen_width // 2 - btn_w // 2
+
+    y = start_y
+    # Build clickable rects for mouse input
+    game.difficulty_option_rects = []
+    for d, label in zip(diffs, labels):
+        rect = pygame.Rect(x, y, btn_w, btn_h)
+        draw_menu_button(game, rect, label, hover=(d == game.difficulty))
+        game.difficulty_option_rects.append((rect, d))
+        y += btn_h + spacing
+
+    # Current speed info
     current_mult = game.get_current_speed_multiplier()
     speed_info = f"Current Round Speed: {current_mult:.2f}x"
     speed_text = game.small_font.render(speed_info, True, YELLOW)
-    speed_rect = speed_text.get_rect(center=(game.screen_width // 2, int(200 * game.scale_factor)))
-    game.screen.blit(speed_text, speed_rect)
-
-    y = int(280 * game.scale_factor)
-    difficulties = [game.difficulty.EASY, game.difficulty.MEDIUM, game.difficulty.HARD, game.difficulty.NIGHTMARE]
-    colors = [GREEN, YELLOW, ORANGE, RED]
-
-    for i, diff in enumerate(difficulties):
-        settings = game.difficulty_settings[diff]
-        color = colors[i]
-
-        # Highlight selected difficulty
-        if diff == game.difficulty:
-            rect_width = int(600 * game.scale_factor)
-            rect_height = int(60 * game.scale_factor)
-            pygame.draw.rect(game.screen, color,
-                           (game.screen_width // 2 - rect_width // 2, y - 5, rect_width, rect_height), 3)
-
-        # Difficulty name and description
-        name_text = game.font.render(f"{diff.name.capitalize()}: {settings['description']}", True, color)
-        name_rect = name_text.get_rect(center=(game.screen_width // 2, y + int(10 * game.scale_factor)))
-        game.screen.blit(name_text, name_rect)
-
-        # Speed info
-        speed_info = f"Base: {settings['base_speed_multiplier']}x | Max: {settings['max_speed_multiplier']}x | +{settings['speed_increase_per_round']:.2f}/round"
-        speed_text = game.small_font.render(speed_info, True, WHITE)
-        speed_rect = speed_text.get_rect(center=(game.screen_width // 2, y + int(35 * game.scale_factor)))
-        game.screen.blit(speed_text, speed_rect)
-
-        y += int(80 * game.scale_factor)
+    game.screen.blit(speed_text, speed_text.get_rect(center=(game.screen_width // 2, y + int(10 * game.scale_factor))))
 
     # Instructions
-    instructions = [
-        "Use UP/DOWN arrows to select difficulty",
-        "Press ENTER to continue to game mode selection",
-        "Press ESC to return to main menu"
-    ]
-
-    y += int(50 * game.scale_factor)
-    for instruction in instructions:
-        text = game.small_font.render(instruction, True, WHITE)
-        text_rect = text.get_rect(center=(game.screen_width // 2, y))
-        game.screen.blit(text, text_rect)
-        y += int(25 * game.scale_factor)
+    info_y = game.screen_height - int(80 * game.scale_factor)
+    for i, t in enumerate(["UP/DOWN to choose • ENTER to continue", "ESC to return to main menu"]):
+        text = game.small_font.render(t, True, LIGHT_GRAY)
+        game.screen.blit(text, text.get_rect(center=(game.screen_width // 2, info_y + i * int(22 * game.scale_factor))))
 
 def draw_time_select(game):
-    # Draw dynamic background instead of plain black
+    # Background + vignette
     draw_background(game)
+    if not getattr(game, 'fullscreen', False):
+        draw_vignette(game.screen, intensity=100)
 
-    # Title
-    title = game.big_font.render("Select Game Mode", True, WHITE)
-    title_rect = title.get_rect(center=(game.screen_width // 2, int(150 * game.scale_factor)))
-    game.screen.blit(title, title_rect)
+    # Title with glow
+    draw_text_with_glow(
+        game.screen,
+        "Select Game Mode",
+        game.big_font,
+        WHITE,
+        (120, 120, 160),
+        (game.screen_width // 2, int(120 * game.scale_factor)),
+        glow_size=8,
+        glow_alpha=70,
+    )
 
-    y = int(250 * game.scale_factor)
+    # Buttons for modes
+    btn_w = int(520 * game.scale_factor)
+    btn_h = int(58 * game.scale_factor)
+    spacing = int(14 * game.scale_factor)
+    start_y = int(game.screen_height * 0.35)
+    x = game.screen_width // 2 - btn_w // 2
 
-    # Game mode selection
-    modes = [
-        (game.game_mode.ENDLESS, "Endless Mode", "Play until you quit", WHITE),
-        (game.game_mode.TIMED, f"Timed Mode ({game.time_limit}s)", "Race against the clock", YELLOW)
-    ]
+    y = start_y
+    endless_rect = pygame.Rect(x, y, btn_w, btn_h)
+    draw_menu_button(game, endless_rect, "Endless Mode — Play until you quit", hover=(game.game_mode == GameMode.ENDLESS))
+    y += btn_h + spacing
+    timed_rect = pygame.Rect(x, y, btn_w, btn_h)
+    draw_menu_button(game, timed_rect, f"Timed Mode — {game.time_limit}s race", hover=(game.game_mode == GameMode.TIMED))
+    y += btn_h + spacing
 
-    for mode, name, description, color in modes:
-        # Highlight selected mode
-        if mode == game.game_mode:
-            rect_width = int(500 * game.scale_factor)
-            rect_height = int(50 * game.scale_factor)
-            pygame.draw.rect(game.screen, color,
-                           (game.screen_width // 2 - rect_width // 2, y - 5, rect_width, rect_height), 3)
+    # Expose rects for mouse interactions
+    game.mode_option_rects = [(endless_rect, GameMode.ENDLESS), (timed_rect, GameMode.TIMED)]
 
-        # Mode name
-        name_text = game.font.render(name, True, color)
-        name_rect = name_text.get_rect(center=(game.screen_width // 2, y + int(10 * game.scale_factor)))
-        game.screen.blit(name_text, name_rect)
-
-        # Description
-        desc_text = game.small_font.render(description, True, WHITE)
-        desc_rect = desc_text.get_rect(center=(game.screen_width // 2, y + int(35 * game.scale_factor)))
-        game.screen.blit(desc_text, desc_rect)
-
-        y += int(80 * game.scale_factor)
-
-    # Time adjustment for timed mode
-    if game.game_mode.name == 'TIMED':
-        y += int(30 * game.scale_factor)
-        time_text = game.font.render("Adjust Time Limit:", True, YELLOW)
-        game.screen.blit(time_text, (game.screen_width // 2 - time_text.get_width() // 2, y))
-
-        y += int(40 * game.scale_factor)
-        time_controls = game.small_font.render("Use LEFT/RIGHT arrows to adjust time (30s - 300s)", True, WHITE)
-        time_rect = time_controls.get_rect(center=(game.screen_width // 2, y))
-        game.screen.blit(time_controls, time_rect)
+    # Timed config panel
+    if game.game_mode == GameMode.TIMED:
+        cfg_rect = pygame.Rect(x, y + int(10 * game.scale_factor), btn_w, int(60 * game.scale_factor))
+        draw_panel(game.screen, cfg_rect, (18, 20, 32), YELLOW, radius=12, border_width=2, with_shadow=False)
+        txt = game.font.render(f"Time Limit: {game.time_limit}s  (LEFT/RIGHT)", True, YELLOW)
+        game.screen.blit(txt, txt.get_rect(center=cfg_rect.center))
+        game.time_cfg_rect = cfg_rect
+    else:
+        # Remove the attribute if present to avoid stale rects
+        if hasattr(game, 'time_cfg_rect'):
+            delattr(game, 'time_cfg_rect')
 
     # Instructions
-    y += int(60 * game.scale_factor)
-    instructions = [
-        "Use UP/DOWN arrows to select game mode",
-        "Press ENTER to start game",
-        "Press ESC to return to difficulty selection"
-    ]
-
-    for instruction in instructions:
-        text = game.small_font.render(instruction, True, WHITE)
-        text_rect = text.get_rect(center=(game.screen_width // 2, y))
-        game.screen.blit(text, text_rect)
-        y += int(25 * game.scale_factor)
+    info_y = game.screen_height - int(80 * game.scale_factor)
+    for i, t in enumerate(["UP/DOWN to choose • LEFT/RIGHT to adjust time", "ENTER to start • ESC to go back"]):
+        s = game.small_font.render(t, True, LIGHT_GRAY)
+        game.screen.blit(s, s.get_rect(center=(game.screen_width // 2, info_y + i * int(22 * game.scale_factor))))
 
 def draw_medal_icon(surface, cx, cy, size, medal_type):
     """Draw a medal icon with simple ribbons.
@@ -931,13 +1009,21 @@ def draw_medal_icon(surface, cx, cy, size, medal_type):
     pygame.draw.polygon(surface, light, [(int(px), int(py)) for px, py in points])
 
 def draw_high_scores(game):
-    # Draw dynamic background instead of plain black
+    # Background + vignette
     draw_background(game)
+    draw_vignette(game.screen, intensity=100)
 
-    # Title with decorative elements
-    title = game.big_font.render("🏆 HIGH SCORES 🏆", True, YELLOW)
-    title_rect = title.get_rect(center=(game.screen_width // 2, int(80 * game.scale_factor)))
-    game.screen.blit(title, title_rect)
+    # Title with glow
+    draw_text_with_glow(
+        game.screen,
+        "High Scores",
+        game.big_font,
+        YELLOW,
+        (160, 120, 30),
+        (game.screen_width // 2, int(80 * game.scale_factor)),
+        glow_size=8,
+        glow_alpha=80,
+    )
 
     # Subtitle
     subtitle = game.font.render("Top Players", True, WHITE)
@@ -953,14 +1039,14 @@ def draw_high_scores(game):
         table_x = game.screen_width // 2 - table_width // 2
         table_y = int(170 * game.scale_factor)
 
-        # Draw table background with border
-        pygame.draw.rect(game.screen, DARK_GRAY, (table_x, table_y, table_width, table_height))
-        pygame.draw.rect(game.screen, WHITE, (table_x, table_y, table_width, table_height), 2)
+        # Draw table background with rounded panel
+        table_rect = pygame.Rect(table_x, table_y, table_width, table_height)
+        draw_panel(game.screen, table_rect, DARK_GRAY, WHITE, radius=12, border_width=2, with_shadow=True)
 
         # Header row with background
         header_height = int(40 * game.scale_factor)
-        pygame.draw.rect(game.screen, GRAY, (table_x, table_y, table_width, header_height))
-        pygame.draw.rect(game.screen, WHITE, (table_x, table_y, table_width, header_height), 2)
+        header_rect = pygame.Rect(table_x, table_y, table_width, header_height)
+        draw_panel(game.screen, header_rect, GRAY, WHITE, radius=12, border_width=2, with_shadow=False)
 
         # Column positions - responsive based on current table width
         base_table_width = int(1300 * game.scale_factor)
@@ -1136,16 +1222,14 @@ def draw_high_scores(game):
         encourage_rect = encourage.get_rect(center=(game.screen_width // 2, int(330 * game.scale_factor)))
         game.screen.blit(encourage, encourage_rect)
 
-    # Back instruction with better styling
-    back_bg = pygame.Rect(game.screen_width // 2 - int(150 * game.scale_factor),
-                         game.screen_height - int(70 * game.scale_factor),
-                         int(300 * game.scale_factor),
-                         int(30 * game.scale_factor))
-    pygame.draw.rect(game.screen, DARK_GRAY, back_bg)
-    pygame.draw.rect(game.screen, GREEN, back_bg, 2)
-
-    back_text = game.small_font.render("Press ESC to return to main menu", True, GREEN)
-    back_rect = back_text.get_rect(center=(game.screen_width // 2, game.screen_height - int(55 * game.scale_factor)))
+    # Back instruction panel
+    back_bg = pygame.Rect(game.screen_width // 2 - int(180 * game.scale_factor),
+                         game.screen_height - int(80 * game.scale_factor),
+                         int(360 * game.scale_factor),
+                         int(36 * game.scale_factor))
+    draw_panel(game.screen, back_bg, (20, 20, 40), GREEN, radius=10, border_width=2, with_shadow=True)
+    back_text = game.small_font.render("ESC to return to main menu", True, GREEN)
+    back_rect = back_text.get_rect(center=back_bg.center)
     game.screen.blit(back_text, back_rect)
 
 def draw_game_over(game):
@@ -1575,82 +1659,96 @@ def draw_game(game):
         game.screen.blit(hint_text, hint_rect)
 
 def draw_accessibility_menu(game):
-    """Draw accessibility menu with selectable toggles."""
-    game.screen.fill(BLACK)
+    """Draw accessibility menu with new panel/button style and selection highlight."""
+    # Background + vignette
+    draw_background(game)
+    draw_vignette(game.screen, intensity=100)
 
     # Title
-    title = game.big_font.render("Accessibility Options", True, WHITE)
-    title_rect = title.get_rect(center=(game.screen_width // 2, int(100 * game.scale_factor)))
-    game.screen.blit(title, title_rect)
+    draw_text_with_glow(
+        game.screen,
+        "Accessibility Options",
+        game.big_font,
+        WHITE,
+        (120, 120, 160),
+        (game.screen_width // 2, int(100 * game.scale_factor)),
+        glow_size=8,
+        glow_alpha=70,
+    )
 
-    # --- Option list ---
+    # Options
     options = [
-        {
-            "key": "pipe_warning_flash",
-            "label": "Pipe Warning Flash",
-            "description": "Shows a blue flash 0.5s before a pipe spawns"
-        },
-        {
-            "key": "dynamic_background",
-            "label": "Dynamic Star Background",
-            "description": "Enable animated stars with movement and effects (disabled by default)"
-        },
-        {
-            "key": "click_radius_helper",
-            "label": "Click Radius Helper",
-            "description": "Shows visual click area around cursor (use +/- to resize)"
-        },
-        {
-            "key": "disable_pipes",
-            "label": "Disable Pipes",
-            "description": "Completely disable pipe obstacles from spawning"
-        },
-        {
-            "key": "disable_spinners",
-            "label": "Disable Spinners",
-            "description": "Completely disable spinner obstacles from spawning"
-        },
-        {
-            "key": "music_enabled",
-            "label": "Background Music",
-            "description": "Enable or disable background music"
-        },
+        {"key": "pipe_warning_flash", "label": "Pipe Warning Flash", "description": "Flash before pipes spawn"},
+        {"key": "dynamic_background", "label": "Dynamic Star Background", "description": "Animated stars background"},
+        {"key": "click_radius_helper", "label": "Click Radius Helper", "description": "Show/adjust click radius (+/-)"},
+        {"key": "disable_pipes", "label": "Disable Pipes", "description": "Turn off pipe obstacles"},
+        {"key": "disable_spinners", "label": "Disable Spinners", "description": "Turn off spinner obstacles"},
+        {"key": "music_enabled", "label": "Background Music", "description": "Toggle music on/off"},
     ]
 
-    start_y = int(220 * game.scale_factor)
-    line_spacing = int(50 * game.scale_factor)
+    btn_w = int(720 * game.scale_factor)
+    btn_h = int(56 * game.scale_factor)
+    spacing = int(10 * game.scale_factor)
+    start_y = int(180 * game.scale_factor)
+    x = game.screen_width // 2 - btn_w // 2
 
-    # Store rects for mouse interaction
+    # Panel around options
+    panel_h = len(options) * (btn_h + spacing) - spacing + int(24 * game.scale_factor)
+    panel_rect = pygame.Rect(x - int(16 * game.scale_factor), start_y - int(12 * game.scale_factor), btn_w + int(32 * game.scale_factor), panel_h)
+    draw_panel(game.screen, panel_rect, (18, 20, 32), LIGHT_BLUE, radius=14, border_width=2, with_shadow=True)
+
+    # Build rect list and draw rows
     game.accessibility_option_rects = []
-
+    y = start_y
     for idx, opt in enumerate(options):
-        enabled = game.accessibility.get(opt["key"], False)
-        status_text = "ON" if enabled else "OFF"
-        status_color = GREEN if enabled else RED
+        rect = pygame.Rect(x, y, btn_w, btn_h)
+        raw_value = game.accessibility.get(opt["key"], False)
+        is_selected = (idx == game.accessibility_menu_index)
 
-        label = f"{opt['label']}: {status_text}"
-        color = status_color
-        text_surf = game.font.render(label, True, color)
-        text_rect = text_surf.get_rect(center=(game.screen_width // 2, start_y + idx * line_spacing))
+        # Friendly label + state mapping
+        label_text = opt['label']
+        pill_text = "ON" if raw_value else "OFF"
+        pill_color = GREEN if raw_value else RED
 
-        # Highlight selected option
-        if idx == game.accessibility_menu_index:
-            pygame.draw.rect(game.screen, YELLOW, text_rect.inflate(20, 10), 2)
+        if opt['key'] == 'disable_pipes':
+            label_text = 'Pipes'
+            # raw_value True means disabled
+            pill_text = 'Disabled' if raw_value else 'Enabled'
+            pill_color = RED if raw_value else GREEN
+        elif opt['key'] == 'disable_spinners':
+            label_text = 'Spinners'
+            pill_text = 'Disabled' if raw_value else 'Enabled'
+            pill_color = RED if raw_value else GREEN
 
-        game.screen.blit(text_surf, text_rect)
-        game.accessibility_option_rects.append((text_rect, opt["key"]))
+        # Row background with friendly label
+        draw_menu_button(game, rect, label_text, hover=is_selected)
+
+        # Status pill on right
+        pill_w = int(120 * game.scale_factor)
+        pill_h = int(28 * game.scale_factor)
+        pill_rect = pygame.Rect(rect.right - pill_w - int(12 * game.scale_factor), rect.centery - pill_h // 2, pill_w, pill_h)
+        draw_panel(game.screen, pill_rect, pill_color, WHITE, radius=pill_h // 2, border_width=1, with_shadow=False)
+        pill_label = game.small_font.render(pill_text, True, BLACK)
+        game.screen.blit(pill_label, pill_label.get_rect(center=pill_rect.center))
+
+        # Store for input hit testing
+        game.accessibility_option_rects.append((rect, opt['key']))
+        y += btn_h + spacing
 
     # Footer instructions
-    footer_lines = [
-        "UP/DOWN – Navigate    ENTER/SPACE/CLICK – Toggle",
-        "ESC – Return to Menu"
-    ]
-    footer_y = start_y + len(options) * line_spacing + int(60 * game.scale_factor)
-    for line in footer_lines:
+    # Single-line description for selected option (less clutter)
+    sel = options[game.accessibility_menu_index % len(options)] if options else None
+    if sel:
+        desc_bg = pygame.Rect(panel_rect.left, panel_rect.bottom + int(10 * game.scale_factor), panel_rect.width, int(34 * game.scale_factor))
+        draw_panel(game.screen, desc_bg, (20, 22, 34), LIGHT_BLUE, radius=10, border_width=1, with_shadow=False)
+        desc_surf = game.small_font.render(sel['description'], True, LIGHT_GRAY)
+        game.screen.blit(desc_surf, desc_surf.get_rect(center=desc_bg.center))
+
+    footer_y = (desc_bg.bottom if sel else panel_rect.bottom) + int(18 * game.scale_factor)
+    for line in ("UP/DOWN to navigate • ENTER/SPACE/CLICK to toggle", "ESC to return to menu"):
         surf = game.small_font.render(line, True, LIGHT_GRAY)
-        rect = surf.get_rect(center=(game.screen_width // 2, footer_y))
-        game.screen.blit(surf, rect)
-        footer_y += int(25 * game.scale_factor)
+        game.screen.blit(surf, surf.get_rect(center=(game.screen_width // 2, footer_y)))
+        footer_y += int(22 * game.scale_factor)
 
 def draw_sandbox(game):
     """Draw sandbox mode interface with keybind instructions"""

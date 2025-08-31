@@ -45,8 +45,8 @@ def handle_game_over_input(game, event, audio_manager):
                 game.state = GameState.MAIN_MENU
                 audio_manager.play_menu_music()
 
-    elif event.type == pygame.MOUSEBUTTONDOWN:
-        # Check if clicked on input box - scaled
+    elif event.type == pygame.MOUSEBUTTONDOWN and getattr(event, 'button', 1) == 1:
+        # Check if left-clicked on input box - scaled
         box_width = int(350 * game.scale_factor)
         box_height = int(45 * game.scale_factor)
         input_y = int(320 * game.scale_factor)  # Approximate position
@@ -109,22 +109,8 @@ def main():
                     if show_high_scores:
                         if event.key == pygame.K_ESCAPE:
                             show_high_scores = False
-                    else:
-                        if event.key == pygame.K_SPACE:
-                            game.state = GameState.DIFFICULTY_SELECT
-                            audio_manager.play_menu_music()
-                        elif event.key == pygame.K_s:
-                            game.start_sandbox_mode()
-                            audio_manager.play_game_music()
-                        elif event.key == pygame.K_h:
-                            show_high_scores = True
-                        elif event.key == pygame.K_a:
-                            game.show_accessibility_menu = True
-                        elif event.key == pygame.K_q:
-                            running = False
-                    
-                    # Handle accessibility menu input
-                    if game.show_accessibility_menu:
+                    elif game.show_accessibility_menu:
+                        # Handle accessibility menu input only; do not update main menu selection
                         option_count = max(1, len(getattr(game, 'accessibility_option_rects', [])))
                         if event.key == pygame.K_ESCAPE:
                             game.show_accessibility_menu = False
@@ -157,6 +143,53 @@ def main():
                                         # Stop any currently playing music
                                         if pygame.mixer.music.get_busy():
                                             pygame.mixer.music.stop()
+                    else:
+                        # Main menu selection/navigation keys
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            total = 5  # number of buttons
+                            game.menu_selected_index = (getattr(game, 'menu_selected_index', 0) - 1) % total
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            total = 5
+                            game.menu_selected_index = (getattr(game, 'menu_selected_index', 0) + 1) % total
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            idx = getattr(game, 'menu_selected_index', 0)
+                            action = ['play','sandbox','scores','accessibility','quit'][idx]
+                            if action == 'play':
+                                game.state = GameState.DIFFICULTY_SELECT
+                                audio_manager.play_menu_music()
+                            elif action == 'sandbox':
+                                game.start_sandbox_mode()
+                                audio_manager.play_game_music()
+                            elif action == 'scores':
+                                show_high_scores = True
+                            elif action == 'accessibility':
+                                game.show_accessibility_menu = True
+                            elif action == 'quit':
+                                running = False
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                        elif event.key == pygame.K_SPACE:
+                            game.state = GameState.DIFFICULTY_SELECT
+                            audio_manager.play_menu_music()
+                        elif event.key == pygame.K_s:
+                            game.start_sandbox_mode()
+                            audio_manager.play_game_music()
+                        elif event.key == pygame.K_h:
+                            show_high_scores = True
+                        elif event.key == pygame.K_a:
+                            game.show_accessibility_menu = True
+                        elif event.key == pygame.K_q:
+                            running = False
 
                 elif game.state == GameState.DIFFICULTY_SELECT:
                     if event.key == pygame.K_UP:
@@ -366,7 +399,8 @@ def main():
                         game.schedule_next_pipe_spawn()
                 
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if game.show_accessibility_menu:
+                left_click = getattr(event, 'button', 1) == 1
+                if game.show_accessibility_menu and left_click:
                     # Toggle option if clicked
                     for idx, (rect, key) in enumerate(getattr(game, 'accessibility_option_rects', [])):
                         if rect.collidepoint(event.pos):
@@ -380,10 +414,128 @@ def main():
                                 game.show_click_radius_tutorial = True
                                 game.click_radius_tutorial_start_time = time.time()
                             break
-                elif game.state == GameState.PLAYING or game.state == GameState.SANDBOX:
+                elif (game.state == GameState.PLAYING or game.state == GameState.SANDBOX) and left_click:
                     game.handle_click(event.pos)
-                elif game.state == GameState.GAME_OVER:
+                elif game.state == GameState.GAME_OVER and left_click:
                     handle_game_over_input(game, event, audio_manager)
+                elif (game.state == GameState.MAIN_MENU and not show_high_scores and not game.show_accessibility_menu and left_click):
+                    # Handle button clicks on redesigned main menu
+                    try:
+                        from ui_renderer import get_main_menu_buttons
+                        buttons = get_main_menu_buttons(game)
+                        for label, rect, action in buttons:
+                            if rect.collidepoint(event.pos):
+                                if action == 'play':
+                                    game.state = GameState.DIFFICULTY_SELECT
+                                    audio_manager.play_menu_music()
+                                elif action == 'sandbox':
+                                    game.start_sandbox_mode()
+                                    audio_manager.play_game_music()
+                                elif action == 'scores':
+                                    show_high_scores = True
+                                elif action == 'accessibility':
+                                    game.show_accessibility_menu = True
+                                elif action == 'quit':
+                                    running = False
+                                # Play a soft click/beep if available
+                                try:
+                                    play_sound(BEEP_SOUND)
+                                except Exception:
+                                    pass
+                                break
+                    except Exception:
+                        pass
+                elif game.state == GameState.DIFFICULTY_SELECT and left_click:
+                    # Mouse click to select difficulty and proceed to mode selection
+                    for rect, diff in getattr(game, 'difficulty_option_rects', []):
+                        if rect.collidepoint(event.pos):
+                            if game.difficulty != diff:
+                                game.difficulty = diff
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                            game.state = GameState.TIME_SELECT
+                            break
+                elif game.state == GameState.TIME_SELECT and left_click:
+                    # Mouse click to select mode or adjust time
+                    for rect, mode in getattr(game, 'mode_option_rects', []):
+                        if rect.collidepoint(event.pos):
+                            game.game_mode = mode
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                            # Start immediately like main menu actions
+                            game.start_new_game()
+                            audio_manager.play_game_music()
+                            break
+                    # Adjust time by clicking left/right halves of the config panel
+                    if game.game_mode == GameMode.TIMED and hasattr(game, 'time_cfg_rect'):
+                        cfg = game.time_cfg_rect
+                        if cfg.collidepoint(event.pos):
+                            if event.pos[0] < cfg.centerx:
+                                game.time_limit = max(30, game.time_limit - 30)
+                            else:
+                                game.time_limit = min(300, game.time_limit + 30)
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                
+            elif event.type == pygame.MOUSEMOTION:
+                # Hover selection for main menu buttons (syncs keyboard selection)
+                if game.state == GameState.MAIN_MENU and not show_high_scores and not game.show_accessibility_menu:
+                    try:
+                        from ui_renderer import get_main_menu_buttons
+                        buttons = get_main_menu_buttons(game)
+                        hovered_action = None
+                        hovered_index = None
+                        for idx, (label, rect, action) in enumerate(buttons):
+                            if rect.collidepoint(event.pos):
+                                hovered_action = action
+                                hovered_index = idx
+                                break
+                        if not hasattr(game, 'menu_hover_action'):
+                            game.menu_hover_action = None
+                        if hovered_action != getattr(game, 'menu_hover_action', None):
+                            game.menu_hover_action = hovered_action
+                            if hovered_index is not None:
+                                game.menu_selected_index = hovered_index
+                            # Play hover beep
+                            try:
+                                play_sound(BEEP_SOUND)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                elif game.state == GameState.DIFFICULTY_SELECT:
+                    # Hover selection with beep like main menu
+                    hovered_index = None
+                    for idx, (rect, diff) in enumerate(getattr(game, 'difficulty_option_rects', [])):
+                        if rect.collidepoint(event.pos):
+                            hovered_index = idx
+                            if getattr(game, 'difficulty_hover_index', None) != idx:
+                                game.difficulty_hover_index = idx
+                                game.difficulty = diff
+                                try:
+                                    play_sound(BEEP_SOUND)
+                                except Exception:
+                                    pass
+                            break
+                elif game.state == GameState.TIME_SELECT:
+                    hovered_index = None
+                    for idx, (rect, mode) in enumerate(getattr(game, 'mode_option_rects', [])):
+                        if rect.collidepoint(event.pos):
+                            hovered_index = idx
+                            if getattr(game, 'mode_hover_index', None) != idx:
+                                game.mode_hover_index = idx
+                                game.game_mode = mode
+                                try:
+                                    play_sound(BEEP_SOUND)
+                                except Exception:
+                                    pass
+                            break
 
         # Update game state
         game.update()
