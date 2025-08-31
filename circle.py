@@ -613,6 +613,23 @@ class Circle:
             self.grab_offset_x = 0  # Offset from cursor center
             self.grab_offset_y = 0
 
+            # Pre-grab wind-up: delay before actually grabbing once in range
+            # Gives players a short window to kill it before the grab triggers
+            pre_grab_by_difficulty = {
+                Difficulty.EASY: 0.7,
+                Difficulty.MEDIUM: 0.5,
+                Difficulty.HARD: 0.3,
+                Difficulty.NIGHTMARE: 0.1,
+            }
+            self.pre_grab_delay = pre_grab_by_difficulty.get(self.difficulty, 0.5)
+            # In Sandbox mode, always use fastest wind-up for testing (0.3s)
+            if game_config.GAME_INSTANCE is not None:
+                state = getattr(game_config.GAME_INSTANCE, 'state', None)
+                is_sandbox = state is not None and hasattr(state, 'value') and state.value == 6  # GameState.SANDBOX
+                if is_sandbox:
+                    self.pre_grab_delay = 0.1
+            self.pre_grab_start_time = 0
+
             # Waiting and stalking behavior
             self.is_stalking = False  # Whether it's actively going for cursor
             self.wait_time = random.uniform(3.0, 8.0)  # Wait 3-8 seconds before stalking

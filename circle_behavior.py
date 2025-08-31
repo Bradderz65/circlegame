@@ -728,14 +728,32 @@ def _handle_cursor_grabber_movement(circle, mouse_pos, screen_width, screen_heig
                 circle.vx = (dx / distance_to_mouse) * attack_force
                 circle.vy = (dy / distance_to_mouse) * attack_force
 
+            # Wind-up: must remain in range for a short delay before grab engages
             if distance_to_mouse <= circle.grab_distance:
-                circle.is_grabbing = True
-                circle.grab_start_time = current_time
-                circle.grab_offset_x = random.uniform(-5, 5)
-                circle.grab_offset_y = random.uniform(-5, 5)
-                circle.color = (255, 100, 100)
-                circle.show_taunt_text = True
-                circle.taunt_alpha = 255
+                # Initialize pre-grab timer on first entry
+                if not hasattr(circle, 'pre_grab_start_time'):
+                    circle.pre_grab_start_time = 0
+                if not hasattr(circle, 'pre_grab_delay'):
+                    # Fallback delay if not set on the circle (defaults to Medium)
+                    circle.pre_grab_delay = 0.5
+
+                if circle.pre_grab_start_time == 0:
+                    circle.pre_grab_start_time = current_time
+                # If stayed in range long enough, engage grab
+                elif (current_time - circle.pre_grab_start_time) >= circle.pre_grab_delay:
+                    circle.is_grabbing = True
+                    circle.grab_start_time = current_time
+                    circle.grab_offset_x = random.uniform(-5, 5)
+                    circle.grab_offset_y = random.uniform(-5, 5)
+                    circle.color = (255, 100, 100)
+                    circle.show_taunt_text = True
+                    circle.taunt_alpha = 255
+                    # Reset pre-grab timer for any future cycles
+                    circle.pre_grab_start_time = 0
+            else:
+                # Out of range: reset wind-up timer
+                if hasattr(circle, 'pre_grab_start_time'):
+                    circle.pre_grab_start_time = 0
     else:
         # Grabbing behavior
         current_time = pygame.time.get_ticks() / 1000.0

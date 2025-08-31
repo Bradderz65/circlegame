@@ -1047,6 +1047,13 @@ def draw_high_scores(game):
         header_height = int(40 * game.scale_factor)
         header_rect = pygame.Rect(table_x, table_y, table_width, header_height)
         draw_panel(game.screen, header_rect, GRAY, WHITE, radius=12, border_width=2, with_shadow=False)
+        # Add a soft gradient highlight to the header for depth
+        header_overlay = pygame.Surface((table_width, header_height), pygame.SRCALPHA)
+        for y in range(header_height):
+            t = y / max(1, header_height - 1)
+            alpha = int(30 * (1 - t))
+            pygame.draw.line(header_overlay, (255, 255, 255, alpha), (0, y), (table_width, y))
+        game.screen.blit(header_overlay, (table_x, table_y))
 
         # Column positions - responsive based on current table width
         base_table_width = int(1300 * game.scale_factor)
@@ -1058,7 +1065,13 @@ def draw_high_scores(game):
         score_x = table_x + sx(240)
         round_x = table_x + sx(360)
         diff_x = table_x + sx(440)
-        accessibility_x = table_x + sx(600)  # Responsive
+        accessibility_x = table_x + sx(600)  # Base position
+
+        # Give the Difficulty/Mode column more room (windowed and fullscreen)
+        extra = int((220 if getattr(game, 'fullscreen', False) else 140) * game.scale_factor)
+        min_access_col = int(160 * game.scale_factor)  # keep at least this width for Accessibility
+        max_accessibility_x = (table_x + table_width) - min_access_col
+        accessibility_x = min(accessibility_x + extra, max_accessibility_x)
 
         # Header text
         header_y = table_y + int(15 * game.scale_factor)
@@ -1067,13 +1080,32 @@ def draw_high_scores(game):
             ("NAME", name_x, YELLOW),
             ("SCORE", score_x, YELLOW),
             ("ROUND", round_x, YELLOW),
-            ("DIFFICULTY", diff_x, YELLOW),
+            ("DIFFICULTY / MODE", diff_x, YELLOW),
             ("ACCESSIBILITY", accessibility_x, YELLOW)
         ]
 
         for header_text, x_pos, color in headers:
             header_surface = game.small_font.render(header_text, True, color)
             game.screen.blit(header_surface, (x_pos, header_y))
+
+        # Subtle separators between columns
+        sep_color = (80, 80, 80)
+        for x_pos in (name_x - sx(20), score_x - sx(20), round_x - sx(20), diff_x - sx(20), accessibility_x - sx(20)):
+            pygame.draw.line(game.screen, sep_color, (x_pos, table_y + header_height), (x_pos, table_y + table_height - 8))
+
+        # Helper to draw rounded badges (difficulty/mode/accessibility)
+        def draw_badge(target_surface, text, x, y, bg, fg, pad_x=8, pad_y=3, border=(200,200,200)):
+            label = game.small_font.render(text, True, fg)
+            w, h = label.get_width() + pad_x * 2, label.get_height() + pad_y * 2
+            rect = pygame.Rect(x, y - 2, w, h)
+            pygame.draw.rect(target_surface, bg, rect, border_radius=10)
+            pygame.draw.rect(target_surface, border, rect, 1, border_radius=10)
+            target_surface.blit(label, (x + pad_x, y + pad_y - 2))
+            return w, h
+
+        def measure_badge_width(text, pad_x=8, pad_y=3):
+            label = game.small_font.render(text, True, WHITE)
+            return label.get_width() + pad_x * 2
 
         # Score entries
         row_height = int(35 * game.scale_factor)
@@ -1113,38 +1145,78 @@ def draw_high_scores(game):
             round_text = game.small_font.render(str(hs.round_reached), True, BLUE)
             game.screen.blit(round_text, (round_x, row_y))
 
-            # Difficulty with color coding
-            diff_color = {
+            # Difficulty and mode as compact badges
+            diff_str = hs.difficulty if hasattr(hs, 'difficulty') else "Medium"
+            base_diff = diff_str.split("(")[0].strip()
+            mode_part = None
+            if "(" in diff_str and ")" in diff_str:
+                mode_part = diff_str.split("(")[1].split(")")[0]
+                if "Timed" in mode_part:
+                    mode_part = "Timed"
+                elif "Endless" in mode_part:
+                    mode_part = "Endless"
+
+            diff_color_map = {
                 "Easy": GREEN,
                 "Medium": YELLOW,
                 "Hard": ORANGE,
                 "Nightmare": RED
-            }.get(hs.difficulty.split()[0], WHITE)
+            }
+            dc = diff_color_map.get(base_diff, LIGHT_GRAY)
+            bg = (max(0, dc[0] // 3), max(0, dc[1] // 3), max(0, dc[2] // 3))
+            # Ensure badges do not overflow into the next column
+            max_badge_span = max(40, (accessibility_x - diff_x) - int(12 * game.scale_factor))
 
-            # Smart truncation for difficulty text (fit within remaining table width)
-            max_diff_width = max(50, (table_x + table_width) - diff_x - int(20 * game.scale_factor))
-            diff_text_surface = game.small_font.render(hs.difficulty, True, diff_color)
-
-            if diff_text_surface.get_width() > max_diff_width:
-                if "(" in hs.difficulty and ")" in hs.difficulty:
-                    base_diff = hs.difficulty.split("(")[0].strip()
-                    mode_part = hs.difficulty.split("(")[1].split(")")[0]
-                    if "Timed" in mode_part or "Endless" in mode_part:
-                        shortened = f"{base_diff} ({mode_part.split()[0]})"
-                        test_surface = game.small_font.render(shortened, True, diff_color)
-                        if test_surface.get_width() <= max_diff_width:
-                            diff_display = shortened
-                        else:
-                            diff_display = base_diff
-                    else:
-                        diff_display = base_diff
+            # Try full difficulty first, then abbreviate if needed
+            diff_badge_w = measure_badge_width(base_diff)
+            draw_diff_text = base_diff
+            if diff_badge_w > max_badge_span:
+                abbr_map = {"Easy": "E", "Medium": "M", "Hard": "H", "Nightmare": "N"}
+                abbr = abbr_map.get(base_diff, base_diff[:1])
+                if measure_badge_width(abbr) <= max_badge_span:
+                    draw_diff_text = abbr
+                    diff_badge_w = measure_badge_width(draw_diff_text)
                 else:
-                    diff_display = hs.difficulty[:20] + "..."
-            else:
-                diff_display = hs.difficulty
+                    # As a last resort, draw a tiny dash badge
+                    draw_diff_text = "-"
+                    diff_badge_w = measure_badge_width(draw_diff_text)
 
-            diff_text = game.small_font.render(diff_display, True, diff_color)
-            game.screen.blit(diff_text, (diff_x, row_y))
+            # Clip drawing to the diff/mode column to prevent overflow
+            row_top = table_y + header_height + (i * row_height)
+            prev_clip = game.screen.get_clip()
+            game.screen.set_clip(pygame.Rect(diff_x, row_top, max_badge_span, row_height))
+
+            # Draw badges into a dedicated column surface to guarantee no overflow
+            row_top = table_y + header_height + (i * row_height)
+            col_w = max_badge_span
+            col_h = row_height
+            col_surf = pygame.Surface((col_w, col_h), pygame.SRCALPHA)
+            y_rel = row_y - row_top
+
+            used_w, _ = draw_badge(col_surf, draw_diff_text, 0, y_rel, bg, WHITE, border=dc)
+
+            # Mode badge only if it fits within remaining space; try abbreviations if needed
+            if mode_part:
+                spacing = int(8 * game.scale_factor)
+                desired_mode = mode_part
+                mode_w = measure_badge_width(desired_mode)
+                if used_w + spacing + mode_w > col_w:
+                    # Try short forms
+                    short_map = {"Endless": "End", "Timed": "Time"}
+                    desired_mode = short_map.get(mode_part, mode_part[:3])
+                    mode_w = measure_badge_width(desired_mode)
+                if used_w + spacing + mode_w > col_w:
+                    shorter_map = {"Endless": "E", "Timed": "T"}
+                    desired_mode = shorter_map.get(mode_part, mode_part[:1])
+                    mode_w = measure_badge_width(desired_mode)
+                if used_w + spacing + mode_w <= col_w:
+                    draw_badge(col_surf, desired_mode, used_w + spacing, y_rel, (30, 60, 100), LIGHT_BLUE, border=(120,180,255))
+
+            # Blit column surface in-place
+            game.screen.blit(col_surf, (diff_x, row_top))
+
+            # Restore previous clip
+            game.screen.set_clip(prev_clip)
 
             # Accessibility status - combine all accessibility features
             accessibility_features = []
@@ -1162,37 +1234,17 @@ def draw_high_scores(game):
                 accessibility_features.append("No Spinners")
             
             if accessibility_features:
-                # Join features with commas, truncate if too long
-                accessibility_text_str = ", ".join(accessibility_features)
-                max_accessibility_width = max(50, (table_x + table_width) - accessibility_x - int(20 * game.scale_factor))
-                
-                # Test if text fits
-                test_surface = game.small_font.render(accessibility_text_str, True, LIGHT_BLUE)
-                if test_surface.get_width() > max_accessibility_width:
-                    # Try abbreviations if too long
-                    abbreviated_features = []
-                    for feature in accessibility_features:
-                        if feature == "Click Helper":
-                            abbreviated_features.append("Click")
-                        elif feature == "No Pipes":
-                            abbreviated_features.append("NoPipes")
-                        elif feature == "No Spinners":
-                            abbreviated_features.append("NoSpinners")
-                    
-                    accessibility_text_str = ", ".join(abbreviated_features)
-                    test_surface = game.small_font.render(accessibility_text_str, True, LIGHT_BLUE)
-                    
-                    # If still too long, truncate with ellipsis
-                    if test_surface.get_width() > max_accessibility_width:
-                        while len(accessibility_text_str) > 3 and test_surface.get_width() > max_accessibility_width:
-                            accessibility_text_str = accessibility_text_str[:-4] + "..."
-                            test_surface = game.small_font.render(accessibility_text_str, True, LIGHT_BLUE)
-                
-                accessibility_text = game.small_font.render(accessibility_text_str, True, LIGHT_BLUE)
-                game.screen.blit(accessibility_text, (accessibility_x, row_y))
+                max_w = max(80, (table_x + table_width) - accessibility_x - int(20 * game.scale_factor))
+                cur_x = accessibility_x
+                for feat in accessibility_features:
+                    label = 'Click' if feat == 'Click Helper' else ('NoPipes' if feat == 'No Pipes' else ('NoSpinners' if feat == 'No Spinners' else feat))
+                    w, _ = draw_badge(game.screen, label, cur_x, row_y, (35,35,35), LIGHT_BLUE, border=(120,120,160))
+                    cur_x += w + int(6 * game.scale_factor)
+                    if cur_x - accessibility_x > max_w:
+                        break
             else:
-                accessibility_text = game.small_font.render("-", True, GRAY)
-                game.screen.blit(accessibility_text, (accessibility_x, row_y))
+                # Subtle placeholder badge
+                draw_badge(game.screen, "-", accessibility_x, row_y, (30,30,30), GRAY, border=(90,90,90))
 
         # Statistics section
         stats_y = table_y + table_height + int(30 * game.scale_factor)
@@ -1204,6 +1256,11 @@ def draw_high_scores(game):
         stats_surface = game.small_font.render(stats_text, True, LIGHT_GRAY)
         stats_rect = stats_surface.get_rect(center=(game.screen_width // 2, stats_y))
         game.screen.blit(stats_surface, stats_rect)
+
+        # Back hint
+        hint = game.small_font.render("Press ESC to return", True, LIGHT_GRAY)
+        hint_rect = hint.get_rect(center=(game.screen_width // 2, stats_y + int(26 * game.scale_factor)))
+        game.screen.blit(hint, hint_rect)
 
     else:
         # No scores message with better styling
@@ -1217,6 +1274,10 @@ def draw_high_scores(game):
         no_scores = game.font.render("No high scores yet!", True, WHITE)
         no_scores_rect = no_scores.get_rect(center=(game.screen_width // 2, int(300 * game.scale_factor)))
         game.screen.blit(no_scores, no_scores_rect)
+
+        hint = game.small_font.render("Press ESC to return", True, LIGHT_GRAY)
+        hint_rect = hint.get_rect(center=(game.screen_width // 2, int(340 * game.scale_factor)))
+        game.screen.blit(hint, hint_rect)
 
         encourage = game.small_font.render("Play a game to set your first record!", True, YELLOW)
         encourage_rect = encourage.get_rect(center=(game.screen_width // 2, int(330 * game.scale_factor)))
